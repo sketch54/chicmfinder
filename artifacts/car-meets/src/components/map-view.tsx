@@ -2,7 +2,7 @@ import { CalendarEvent } from "@workspace/api-client-react";
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import L from "leaflet";
 import { format, parseISO } from "date-fns";
-import { useGeocode } from "@/hooks/use-geocode";
+import { useGeocodeLocation } from "@/hooks/use-geocode";
 
 const createCustomIcon = (isSelected: boolean) => {
   const color = isSelected ? "#ff8c00" : "#f5f5f5";
@@ -68,7 +68,7 @@ function EventMarker({
   isSelected: boolean;
   onClick: () => void;
 }) {
-  const { data: geo } = useGeocode(event.location);
+  const { data: geo } = useGeocodeLocation(event.location);
 
   if (!geo) return null;
 

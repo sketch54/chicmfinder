@@ -2,7 +2,7 @@ import { CalendarEvent } from "@workspace/api-client-react";
 import { format, parseISO } from "date-fns";
 import { MapPin } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useGeocode } from "@/hooks/use-geocode";
+import { useGeocodeLocation } from "@/hooks/use-geocode";
 
 interface MeetCardProps {
   event: CalendarEvent;
@@ -11,14 +11,13 @@ interface MeetCardProps {
 }
 
 export function MeetCard({ event, isSelected, onClick }: MeetCardProps) {
-  const { isLoading: isGeoLoading } = useGeocode(event.location);
+  const { isLoading: isGeoLoading } = useGeocodeLocation(event.location);
 
   const startTime = format(parseISO(event.start), "h:mm a");
   const endTime = format(parseISO(event.end), "h:mm a");
 
   return (
     <div
-      data-testid={`card-event-${event.id}`}
       onClick={onClick}
       className={cn(
         "cursor-pointer rounded-lg border p-4 transition-all duration-200",

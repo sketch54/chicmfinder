@@ -2,32 +2,9 @@ import { Router, type IRouter } from "express";
 
 const router: IRouter = Router();
 
-// In-memory geocode cache — avoids re-geocoding the same address
 const geocodeCache = new Map<string, { lat: number; lng: number; displayName: string } | null>();
 
-// Serial queue with 300ms spacing to be a good citizen to Photon
-let lastRequestTime = 0;
-const MIN_INTERVAL_MS = 300;
-let pendingRequest: Promise<void> = Promise.resolve();
-
-function scheduleGeocodeRequest<T>(fn: () => Promise<T>): Promise<T> {
-  const result = pendingRequest.then(async () => {
-    const now = Date.now();
-    const wait = Math.max(0, lastRequestTime + MIN_INTERVAL_MS - now);
-    if (wait > 0) {
-      await new Promise((r) => setTimeout(r, wait));
-    }
-    lastRequestTime = Date.now();
-    return fn();
-  });
-  pendingRequest = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  return result;
-}
-
-async function geocodeWithPhoton(
+async function geocodeWithArcGIS(
   address: string,
 ): Promise<{ lat: number; lng: number; displayName: string } | null> {
   const cacheKey = address.toLowerCase().trim();
@@ -35,37 +12,40 @@ async function geocodeWithPhoton(
     return geocodeCache.get(cacheKey) ?? null;
   }
 
-  const result = await scheduleGeocodeRequest(async () => {
-    const params = new URLSearchParams({ q: address.trim(), limit: "1" });
-    const response = await fetch(`https://photon.komoot.io/api/?${params.toString()}`, {
-      headers: {
-        "User-Agent": "CarMeetsMapApp/1.0",
-        Accept: "application/json",
-      },
-      signal: AbortSignal.timeout(8000),
-    });
-
-    if (!response.ok) {
-      throw Object.assign(new Error("Photon geocoding error"), { status: response.status });
-    }
-
-    const data = (await response.json()) as {
-      features?: Array<{
-        geometry: { coordinates: [number, number] };
-        properties: { name?: string; city?: string; state?: string; country?: string };
-      }>;
-    };
-
-    if (!data.features || data.features.length === 0) return null;
-
-    const feature = data.features[0];
-    const [lng, lat] = feature.geometry.coordinates;
-    const p = feature.properties;
-    const displayName = [p.name, p.city, p.state, p.country].filter(Boolean).join(", ");
-
-    return { lat, lng, displayName };
+  const params = new URLSearchParams({
+    SingleLine: address.trim(),
+    outFields: "Match_addr",
+    maxLocations: "1",
+    f: "json",
   });
 
+  const response = await fetch(
+    `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?${params.toString()}`,
+    {
+      headers: { "User-Agent": "CarMeetsMapApp/1.0", Accept: "application/json" },
+      signal: AbortSignal.timeout(8000),
+    },
+  );
+
+  if (!response.ok) {
+    throw Object.assign(new Error("ArcGIS geocoding error"), { status: response.status });
+  }
+
+  const data = (await response.json()) as {
+    candidates?: Array<{
+      address: string;
+      location: { x: number; y: number };
+      score: number;
+    }>;
+  };
+
+  if (!data.candidates || data.candidates.length === 0) {
+    geocodeCache.set(cacheKey, null);
+    return null;
+  }
+
+  const best = data.candidates[0];
+  const result = { lat: best.location.y, lng: best.location.x, displayName: best.address };
   geocodeCache.set(cacheKey, result);
   return result;
 }
@@ -78,7 +58,7 @@ router.get("/geocode", async (req, res): Promise<void> => {
   }
 
   try {
-    const result = await geocodeWithPhoton(address);
+    const result = await geocodeWithArcGIS(address);
     if (!result) {
       res.status(404).json({ error: "Address not found" });
       return;
