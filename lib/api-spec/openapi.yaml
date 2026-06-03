@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: calendar
+    description: Calendar operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,81 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /calendar/events:
+    get:
+      operationId: getCalendarEvents
+      tags: [calendar]
+      summary: Fetch and parse calendar events
+      description: Fetches an iCal calendar from the given URL and returns parsed events
+      parameters:
+        - name: url
+          in: query
+          required: true
+          schema:
+            type: string
+          description: The iCal/Google Calendar URL to fetch
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Optional date filter in YYYY-MM-DD format. If provided, returns only events on that day."
+      responses:
+        "200":
+          description: List of calendar events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CalendarEvent"
+        "400":
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Failed to fetch calendar
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /geocode:
+    get:
+      operationId: geocodeAddress
+      tags: [calendar]
+      summary: Geocode an address to lat/lng
+      description: Converts a street address to geographic coordinates
+      parameters:
+        - name: address
+          in: query
+          required: true
+          schema:
+            type: string
+          description: The address to geocode
+      responses:
+        "200":
+          description: Geocoded coordinates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeoLocation"
+        "404":
+          description: Address not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "400":
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +111,40 @@ components:
       required:
         - status
 
+    CalendarEvent:
+      type: object
+      required: [id, title, start, end]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        start:
+          type: string
+          description: ISO 8601 datetime string
+        end:
+          type: string
+          description: ISO 8601 datetime string
+        location:
+          type: ["string", "null"]
+          description: Address or venue of the event
+        description:
+          type: ["string", "null"]
+
+    GeoLocation:
+      type: object
+      required: [lat, lng, displayName]
+      properties:
+        lat:
+          type: number
+        lng:
+          type: number
+        displayName:
+          type: string
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
