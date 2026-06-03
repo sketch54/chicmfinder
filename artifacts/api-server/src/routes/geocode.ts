@@ -4,6 +4,22 @@ const router: IRouter = Router();
 
 const geocodeCache = new Map<string, { lat: number; lng: number; displayName: string } | null>();
 
+// Chicago coordinates — used to bias results and filter outliers
+const CHICAGO_LAT = 41.8781;
+const CHICAGO_LNG = -87.6298;
+const MAX_MILES = 100;
+const MAX_METERS = MAX_MILES * 1609.34;
+
+function haversineDistanceMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 3958.8; // Earth radius in miles
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 async function geocodeWithArcGIS(
   address: string,
 ): Promise<{ lat: number; lng: number; displayName: string } | null> {
@@ -17,6 +33,9 @@ async function geocodeWithArcGIS(
     outFields: "Match_addr",
     maxLocations: "1",
     f: "json",
+    // Bias toward Chicago; results within MAX_METERS are strongly preferred
+    location: `${CHICAGO_LNG},${CHICAGO_LAT}`,
+    distance: String(MAX_METERS),
   });
 
   const response = await fetch(
@@ -45,7 +64,17 @@ async function geocodeWithArcGIS(
   }
 
   const best = data.candidates[0];
-  const result = { lat: best.location.y, lng: best.location.x, displayName: best.address };
+  const lat = best.location.y;
+  const lng = best.location.x;
+
+  // Discard results that fall outside the 100-mile Chicago radius
+  const distanceMiles = haversineDistanceMiles(CHICAGO_LAT, CHICAGO_LNG, lat, lng);
+  if (distanceMiles > MAX_MILES) {
+    geocodeCache.set(cacheKey, null);
+    return null;
+  }
+
+  const result = { lat, lng, displayName: best.address };
   geocodeCache.set(cacheKey, result);
   return result;
 }
@@ -60,7 +89,7 @@ router.get("/geocode", async (req, res): Promise<void> => {
   try {
     const result = await geocodeWithArcGIS(address);
     if (!result) {
-      res.status(404).json({ error: "Address not found" });
+      res.status(404).json({ error: "Address not found within Chicago area" });
       return;
     }
     res.json(result);
