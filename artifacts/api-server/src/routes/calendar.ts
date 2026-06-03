@@ -1,10 +1,11 @@
 import { Router, type IRouter } from "express";
 import ical from "node-ical";
-import { RRule, RRuleSet } from "rrule";
+import { RRule } from "rrule";
 
 const router: IRouter = Router();
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TZ = "America/Chicago";
 
 function convertGoogleCalUrl(rawUrl: string): string {
   try {
@@ -28,12 +29,41 @@ function toDate(v: Date | string | number | undefined): Date {
   return new Date(v);
 }
 
-function sameLocalDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
+// Get {year, month (1-based), day} in America/Chicago timezone
+function chicagoParts(date: Date): { year: number; month: number; day: number } {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+  });
+  const parts = fmt.formatToParts(date);
+  return {
+    year: +parts.find((p) => p.type === "year")!.value,
+    month: +parts.find((p) => p.type === "month")!.value,
+    day: +parts.find((p) => p.type === "day")!.value,
+  };
+}
+
+function sameChicagoDay(
+  date: Date,
+  year: number,
+  month: number, // 1-based
+  day: number,
+): boolean {
+  const p = chicagoParts(date);
+  return p.year === year && p.month === month && p.day === day;
+}
+
+// UTC boundaries that bracket an entire Chicago day (accounting for CDT/CST ±6h buffer)
+function chicagoDayWindowUTC(year: number, month: number, day: number): { start: Date; end: Date } {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const base = `${year}-${pad(month)}-${pad(day)}`;
+  // Chicago is UTC-6 (CST) or UTC-5 (CDT). A ±7h buffer safely covers the full local day in UTC.
+  return {
+    start: new Date(`${base}T00:00:00Z`), // Chicago day starts no earlier than this in UTC
+    end: new Date(`${base}T23:59:59Z`),   // Chicago day ends no later than UTC+7h = next UTC day
+  };
 }
 
 interface ParsedEvent {
@@ -45,95 +75,73 @@ interface ParsedEvent {
   description: string | null;
 }
 
-function makeEvent(
-  uid: string,
-  summary: string,
-  start: Date,
-  end: Date,
-  location: string | null,
-  description: string | null,
-): ParsedEvent {
+function extractMeta(event: ical.VEvent): {
+  title: string;
+  location: string | null;
+  description: string | null;
+} {
   return {
-    id: uid,
-    title: typeof summary === "string" && summary.trim() ? summary.trim() : "(No title)",
-    start: start.toISOString(),
-    end: end.toISOString(),
-    location,
-    description,
+    title: typeof event.summary === "string" && event.summary.trim() ? event.summary.trim() : "(No title)",
+    location: typeof event.location === "string" && event.location.trim() ? event.location.trim() : null,
+    description: typeof event.description === "string" && event.description.trim() ? event.description.trim() : null,
   };
 }
 
-// Extract occurrences of a recurring VEVENT that fall on filterDate (local time)
-function expandRecurring(event: ical.VEvent, filterDate: Date): ParsedEvent[] {
+function makeEvent(
+  uid: string,
+  meta: ReturnType<typeof extractMeta>,
+  start: Date,
+  end: Date,
+): ParsedEvent {
+  return { id: uid, title: meta.title, start: start.toISOString(), end: end.toISOString(), location: meta.location, description: meta.description };
+}
+
+function expandRecurring(
+  event: ical.VEvent,
+  year: number,
+  month: number,
+  day: number,
+): ParsedEvent[] {
   const dtstart = toDate(event.start);
   const dtend = toDate(event.end ?? event.start);
-  const durationMs = dtend.getTime() - dtstart.getTime();
+  const durationMs = Math.max(0, dtend.getTime() - dtstart.getTime());
 
   const rawRrule = (event as unknown as { rrule?: string | { toString(): string } }).rrule;
   if (!rawRrule) return [];
 
   const rruleStr =
-    typeof rawRrule === "string"
-      ? rawRrule
-      : typeof rawRrule === "object" && rawRrule !== null
-        ? rawRrule.toString()
-        : "";
-
+    typeof rawRrule === "string" ? rawRrule
+    : typeof rawRrule === "object" && rawRrule !== null ? rawRrule.toString()
+    : "";
   if (!rruleStr) return [];
 
   let rule: RRule;
   try {
-    // Ensure DTSTART is embedded so RRule uses the correct timezone offset
-    const fullStr = rruleStr.includes("DTSTART")
+    const full = rruleStr.includes("DTSTART")
       ? rruleStr
-      : `DTSTART:${dtstart.toISOString().replace(/[-:]/g, "").split(".")[0]}Z\n${rruleStr}`;
-    rule = RRule.fromString(fullStr);
+      : `DTSTART:${dtstart.toISOString().replace(/[-:.]/g, "").slice(0, 15)}Z\n${rruleStr}`;
+    rule = RRule.fromString(full);
   } catch {
     return [];
   }
 
-  // Query the day window in UTC
-  const dayStart = new Date(
-    Date.UTC(filterDate.getFullYear(), filterDate.getMonth(), filterDate.getDate(), 0, 0, 0),
+  // Query a UTC window that covers the full Chicago day plus generous buffer
+  const { start: winStart, end: winEnd } = chicagoDayWindowUTC(year, month, day);
+  // Extend ±7 hours to catch edge cases near day boundaries
+  const queryStart = new Date(winStart.getTime() - 7 * 3600_000);
+  const queryEnd = new Date(winEnd.getTime() + 7 * 3600_000);
+
+  const candidates = rule.between(queryStart, queryEnd, true);
+
+  // Filter to only occurrences that actually fall on the requested Chicago day
+  const occurrences = candidates.filter((d) => sameChicagoDay(d, year, month, day));
+
+  const meta = extractMeta(event);
+  const uid = event.uid ?? `${dtstart.getTime()}-${meta.title}`;
+
+  return occurrences.map((occDate) =>
+    makeEvent(`${uid}-${occDate.getTime()}`, meta, occDate, new Date(occDate.getTime() + durationMs))
   );
-  const dayEnd = new Date(
-    Date.UTC(filterDate.getFullYear(), filterDate.getMonth(), filterDate.getDate(), 23, 59, 59),
-  );
-
-  const occurrences = rule.between(dayStart, dayEnd, true);
-
-  // Also check in local-day terms — RRule UTC comparison can miss timezone-shifted events
-  const localOccurrences = rule.all((d) => {
-    const occ = new Date(d);
-    return occ >= dayStart && occ <= dayEnd;
-  });
-
-  const allOccs = [...occurrences, ...localOccurrences].filter(
-    (d, i, arr) => arr.findIndex((x) => x.getTime() === d.getTime()) === i,
-  );
-
-  if (allOccs.length === 0) {
-    // Fallback: check if the base event itself falls on filterDate
-    if (sameLocalDay(dtstart, filterDate)) {
-      // Already handled by the non-recurring path; skip here
-    }
-    return [];
-  }
-
-  const title = typeof event.summary === "string" ? event.summary.trim() : "(No title)";
-  const location =
-    typeof event.location === "string" && event.location.trim() ? event.location.trim() : null;
-  const description =
-    typeof event.description === "string" && event.description.trim()
-      ? event.description.trim()
-      : null;
-
-  return allOccs.map((occDate, idx) => {
-    const occStart = occDate;
-    const occEnd = new Date(occDate.getTime() + durationMs);
-    const uid = event.uid ? `${event.uid}-${occDate.getTime()}` : `${occDate.getTime()}-${idx}`;
-    return makeEvent(uid, title, occStart, occEnd, location, description);
-  });
 }
 
 router.get("/calendar/events", async (req, res): Promise<void> => {
@@ -144,19 +152,17 @@ router.get("/calendar/events", async (req, res): Promise<void> => {
   }
 
   const rawDate = req.query["date"];
-  let filterDate: Date | null = null;
+  let filterYear = 0, filterMonth = 0, filterDay = 0;
+  let hasFilter = false;
+
   if (rawDate !== undefined) {
-    if (typeof rawDate !== "string") {
-      res.status(400).json({ error: "date must be a string" });
-      return;
-    }
-    if (!DATE_RE.test(rawDate)) {
+    if (typeof rawDate !== "string" || !DATE_RE.test(rawDate)) {
       res.status(400).json({ error: "date must be in YYYY-MM-DD format" });
       return;
     }
-    // Parse as local midnight to match event local start times
-    const [y, m, d] = rawDate.split("-").map(Number);
-    filterDate = new Date(y, m - 1, d, 0, 0, 0);
+    [filterYear, filterMonth, filterDay] = rawDate.split("-").map(Number);
+    // filterMonth is already 1-based from the string
+    hasFilter = true;
   }
 
   const calUrl = convertGoogleCalUrl(rawUrl.trim());
@@ -173,9 +179,8 @@ router.get("/calendar/events", async (req, res): Promise<void> => {
 
       const hasRrule = !!(event as unknown as { rrule?: unknown }).rrule;
 
-      if (hasRrule && filterDate !== null) {
-        // Expand recurring events for the requested date
-        const occurrences = expandRecurring(event, filterDate);
+      if (hasRrule && hasFilter) {
+        const occurrences = expandRecurring(event, filterYear, filterMonth, filterDay);
         for (const occ of occurrences) {
           if (!seen.has(occ.id)) {
             seen.add(occ.id);
@@ -183,26 +188,17 @@ router.get("/calendar/events", async (req, res): Promise<void> => {
           }
         }
       } else {
-        // Non-recurring event
         const dtstart = toDate(event.start);
-        if (filterDate !== null && !sameLocalDay(dtstart, filterDate)) continue;
+        // Filter using Chicago timezone day comparison
+        if (hasFilter && !sameChicagoDay(dtstart, filterYear, filterMonth, filterDay)) continue;
 
         const dtend = toDate(event.end ?? event.start);
-        const title = typeof event.summary === "string" ? event.summary.trim() : "(No title)";
-        const location =
-          typeof event.location === "string" && event.location.trim()
-            ? event.location.trim()
-            : null;
-        const description =
-          typeof event.description === "string" && event.description.trim()
-            ? event.description.trim()
-            : null;
-        const uid =
-          event.uid ?? `${dtstart.getTime()}-${title}`;
+        const meta = extractMeta(event);
+        const uid = event.uid ?? `${dtstart.getTime()}-${meta.title}`;
 
         if (!seen.has(uid)) {
           seen.add(uid);
-          events.push(makeEvent(uid, title, dtstart, dtend, location, description));
+          events.push(makeEvent(uid, meta, dtstart, dtend));
         }
       }
     }
@@ -212,8 +208,7 @@ router.get("/calendar/events", async (req, res): Promise<void> => {
   } catch (err) {
     req.log.error({ err }, "Failed to fetch or parse calendar");
     res.status(502).json({
-      error:
-        "Failed to fetch or parse the calendar. Check the URL and ensure the calendar is public.",
+      error: "Failed to fetch or parse the calendar. Check the URL and ensure the calendar is public.",
     });
   }
 });
