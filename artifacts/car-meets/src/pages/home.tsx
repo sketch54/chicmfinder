@@ -1,19 +1,33 @@
 import { useState, useEffect } from "react";
-import { useGetCalendarEvents } from "@workspace/api-client-react";
-import { format } from "date-fns";
+import { useGetCalendarEvents, type CalendarEvent } from "@workspace/api-client-react";
+import { useQueries } from "@tanstack/react-query";
+import { format, addDays } from "date-fns";
 import { MapView } from "@/components/map-view";
 import { MeetCard } from "@/components/meet-card";
+import { WeekSidebar, type DayGroup } from "@/components/week-sidebar";
 import { SettingsModal } from "@/components/settings-modal";
 import { Button } from "@/components/ui/button";
 import { Calendar as CalendarIcon, Settings, MapPin, List, X } from "lucide-react";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 
 const DEFAULT_CALENDAR_URL =
   "https://calendar.google.com/calendar/ical/e7abbfecee4eefbd2ebb1440e132c42e438dc77848e702faa8be9be461691b47%40group.calendar.google.com/public/basic.ics";
 
+// Fetch events for a specific date via the raw API (used by useQueries for week view)
+async function fetchEventsForDate(url: string, dateStr: string): Promise<CalendarEvent[]> {
+  const params = new URLSearchParams({ url, date: dateStr });
+  const res = await fetch(`/api/calendar/events?${params.toString()}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<CalendarEvent[]>;
+}
+
+type Tab = "today" | "week";
+
 export function Home() {
+  const [tab, setTab] = useState<Tab>("today");
   const [date, setDate] = useState<Date>(new Date());
   const [calendarUrl, setCalendarUrl] = useState<string>(
     () => localStorage.getItem("carMeetsCalendarUrl") || DEFAULT_CALENDAR_URL,
@@ -24,12 +38,47 @@ export function Home() {
 
   const dateString = format(date, "yyyy-MM-dd");
 
-  const { data: events, isLoading, error } = useGetCalendarEvents(
+  // ── Today query ──────────────────────────────────────────────────────────
+  const {
+    data: todayEvents,
+    isLoading: todayLoading,
+    error: todayError,
+  } = useGetCalendarEvents(
     { url: calendarUrl, date: dateString },
     { query: { enabled: !!calendarUrl } },
   );
 
-  // Close sidebar on resize to desktop
+  // ── Week queries (7 parallel, starting from today) ───────────────────────
+  const weekDays = Array.from({ length: 7 }, (_, i) => addDays(new Date(), i));
+
+  const weekResults = useQueries({
+    queries: weekDays.map((day) => {
+      const ds = format(day, "yyyy-MM-dd");
+      return {
+        queryKey: ["calendar-events", calendarUrl, ds],
+        queryFn: () => fetchEventsForDate(calendarUrl, ds),
+        enabled: !!calendarUrl && tab === "week",
+        staleTime: 60 * 60 * 1000, // 1h client-side; server cache handles 3am refresh
+      };
+    }),
+  });
+
+  const dayGroups: DayGroup[] = weekDays.map((day, i) => ({
+    date: day,
+    dateStr: format(day, "yyyy-MM-dd"),
+    events: (weekResults[i].data as CalendarEvent[]) ?? [],
+    isLoading: weekResults[i].isLoading,
+    isError: weekResults[i].isError,
+  }));
+
+  const allWeekEvents = dayGroups.flatMap((g) => g.events);
+
+  // ── Active events for the map ─────────────────────────────────────────────
+  const mapEvents: CalendarEvent[] = tab === "week" ? allWeekEvents : (todayEvents ?? []);
+
+  // ── Total meet count for the floating button label ────────────────────────
+  const totalCount = tab === "week" ? allWeekEvents.length : (todayEvents?.length ?? 0);
+
   useEffect(() => {
     const onResize = () => {
       if (window.innerWidth >= 768) setSidebarOpen(false);
@@ -46,13 +95,12 @@ export function Home() {
 
   const handleSelectEvent = (id: string) => {
     setSelectedEventId(id);
-    setSidebarOpen(false); // close drawer on mobile after selecting
+    setSidebarOpen(false);
   };
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground dark">
-
-      {/* ── Mobile backdrop ── */}
+      {/* Mobile backdrop */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 z-20 bg-black/60 md:hidden"
@@ -60,20 +108,17 @@ export function Home() {
         />
       )}
 
-      {/* ── Sidebar ── */}
+      {/* ── Sidebar ─────────────────────────────────────────────────────── */}
       <aside
         className={[
-          // Base styles
           "flex flex-col bg-card border-r border-border",
-          // Mobile: fixed drawer that slides in from the left
           "fixed inset-y-0 left-0 z-30 w-[85vw] max-w-sm transition-transform duration-300 ease-in-out",
           sidebarOpen ? "translate-x-0" : "-translate-x-full",
-          // Desktop: static, normal flow, always visible
           "md:relative md:translate-x-0 md:w-96 md:flex-shrink-0 md:z-10 md:transition-none",
         ].join(" ")}
       >
         {/* Header */}
-        <div className="p-4 border-b border-border flex flex-col gap-4 bg-background flex-shrink-0">
+        <div className="p-4 border-b border-border flex flex-col gap-3 bg-background flex-shrink-0">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-primary">
               <MapPin className="h-6 w-6" />
@@ -83,7 +128,6 @@ export function Home() {
               <Button variant="ghost" size="icon" onClick={() => setIsSettingsOpen(true)}>
                 <Settings className="h-5 w-5 text-muted-foreground" />
               </Button>
-              {/* Close button — mobile only */}
               <Button
                 variant="ghost"
                 size="icon"
@@ -95,89 +139,139 @@ export function Home() {
             </div>
           </div>
 
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                variant="outline"
-                className="w-full justify-start text-left font-normal bg-card border-border hover:bg-secondary"
-              >
-                <CalendarIcon className="mr-2 h-4 w-4 text-primary" />
-                {format(date, "PPP")}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-auto p-0 border-border bg-popover" align="start">
-              <Calendar
-                mode="single"
-                selected={date}
-                onSelect={(d) => d && setDate(d)}
-                initialFocus
-                className="bg-popover text-popover-foreground"
-              />
-            </PopoverContent>
-          </Popover>
+          {/* Tabs */}
+          <div className="flex rounded-lg border border-border bg-background p-1 gap-1">
+            <button
+              onClick={() => setTab("today")}
+              className={cn(
+                "flex-1 rounded-md py-1.5 text-sm font-medium transition-colors",
+                tab === "today"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              Today
+            </button>
+            <button
+              onClick={() => setTab("week")}
+              className={cn(
+                "flex-1 rounded-md py-1.5 text-sm font-medium transition-colors",
+                tab === "week"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              This Week
+            </button>
+          </div>
+
+          {/* Date picker — only on Today tab */}
+          {tab === "today" && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="w-full justify-start text-left font-normal bg-card border-border hover:bg-secondary"
+                >
+                  <CalendarIcon className="mr-2 h-4 w-4 text-primary" />
+                  {format(date, "PPP")}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0 border-border bg-popover" align="start">
+                <Calendar
+                  mode="single"
+                  selected={date}
+                  onSelect={(d) => d && setDate(d)}
+                  initialFocus
+                  className="bg-popover text-popover-foreground"
+                />
+              </PopoverContent>
+            </Popover>
+          )}
+
+          {/* Week range label */}
+          {tab === "week" && (
+            <p className="text-xs text-muted-foreground text-center">
+              {format(weekDays[0], "MMM d")} – {format(weekDays[6], "MMM d, yyyy")}
+            </p>
+          )}
         </div>
 
         {/* Event list */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {isLoading && (
+        <div className="flex-1 overflow-y-auto p-4">
+          {/* ── Today tab ── */}
+          {tab === "today" && (
             <div className="space-y-4">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="p-4 rounded-md border border-border bg-card">
-                  <Skeleton className="h-5 w-2/3 mb-2 bg-muted" />
-                  <Skeleton className="h-4 w-1/3 mb-4 bg-muted" />
-                  <Skeleton className="h-4 w-full bg-muted" />
+              {todayLoading && (
+                <div className="space-y-4">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="p-4 rounded-md border border-border bg-card">
+                      <Skeleton className="h-5 w-2/3 mb-2 bg-muted" />
+                      <Skeleton className="h-4 w-1/3 mb-4 bg-muted" />
+                      <Skeleton className="h-4 w-full bg-muted" />
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
+
+              {todayError && (
+                <div className="text-center p-6 border border-destructive/50 rounded-md bg-destructive/10">
+                  <p className="text-destructive font-medium mb-2">Failed to load events</p>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Please check the calendar URL in settings.
+                  </p>
+                  <Button
+                    variant="outline"
+                    onClick={() => setIsSettingsOpen(true)}
+                    className="border-destructive text-destructive"
+                  >
+                    Open Settings
+                  </Button>
+                </div>
+              )}
+
+              {!todayLoading && !todayError && todayEvents?.length === 0 && (
+                <div className="text-center p-8 text-muted-foreground">
+                  <div className="bg-secondary w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <CalendarIcon className="h-6 w-6 opacity-50" />
+                  </div>
+                  <p>No meets scheduled for this day.</p>
+                </div>
+              )}
+
+              {!todayLoading &&
+                !todayError &&
+                todayEvents?.map((event) => (
+                  <MeetCard
+                    key={event.id}
+                    event={event}
+                    isSelected={selectedEventId === event.id}
+                    onClick={() => handleSelectEvent(event.id)}
+                  />
+                ))}
             </div>
           )}
 
-          {error && (
-            <div className="text-center p-6 border border-destructive/50 rounded-md bg-destructive/10">
-              <p className="text-destructive font-medium mb-2">Failed to load events</p>
-              <p className="text-sm text-muted-foreground mb-4">
-                Please check the calendar URL in settings.
-              </p>
-              <Button
-                variant="outline"
-                onClick={() => setIsSettingsOpen(true)}
-                className="border-destructive text-destructive"
-              >
-                Open Settings
-              </Button>
-            </div>
+          {/* ── This Week tab ── */}
+          {tab === "week" && (
+            <WeekSidebar
+              dayGroups={dayGroups}
+              selectedEventId={selectedEventId}
+              onSelectEvent={handleSelectEvent}
+            />
           )}
-
-          {!isLoading && !error && events?.length === 0 && (
-            <div className="text-center p-8 text-muted-foreground">
-              <div className="bg-secondary w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
-                <CalendarIcon className="h-6 w-6 opacity-50" />
-              </div>
-              <p>No meets scheduled for this day.</p>
-            </div>
-          )}
-
-          {!isLoading &&
-            !error &&
-            events?.map((event) => (
-              <MeetCard
-                key={event.id}
-                event={event}
-                isSelected={selectedEventId === event.id}
-                onClick={() => handleSelectEvent(event.id)}
-              />
-            ))}
         </div>
       </aside>
 
-      {/* ── Map (always full height, takes remaining width on desktop) ── */}
+      {/* ── Map ─────────────────────────────────────────────────────────── */}
       <div className="relative flex-1 h-full">
         <MapView
-          events={events || []}
+          events={mapEvents}
           selectedEventId={selectedEventId}
           onSelectEvent={setSelectedEventId}
         />
 
-        {/* Floating toggle button — mobile only */}
+        {/* Floating toggle — mobile only */}
         <button
           onClick={() => setSidebarOpen(true)}
           className={[
@@ -188,7 +282,7 @@ export function Home() {
           ].join(" ")}
         >
           <List className="h-4 w-4" />
-          {events && events.length > 0 ? `${events.length} meets` : "View meets"}
+          {totalCount > 0 ? `${totalCount} meets` : "View meets"}
         </button>
       </div>
 
