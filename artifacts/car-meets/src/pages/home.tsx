@@ -6,11 +6,9 @@ import { MapView } from "@/components/map-view";
 import { MeetCard } from "@/components/meet-card";
 import { EventDetailModal } from "@/components/event-detail-modal";
 import { InfoModal } from "@/components/info-modal";
-import { SettingsModal } from "@/components/settings-modal";
 import { Button } from "@/components/ui/button";
 import {
   Calendar as CalendarIcon,
-  Settings,
   MapPin,
   List,
   X,
@@ -46,10 +44,7 @@ function haversineDistance(
 
 export function Home() {
   const [date, setDate] = useState<Date>(new Date());
-  const [calendarUrl, setCalendarUrl] = useState<string>(
-    () => localStorage.getItem("carMeetsCalendarUrl") || DEFAULT_CALENDAR_URL,
-  );
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const calendarUrl = DEFAULT_CALENDAR_URL;
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [detailEvent, setDetailEvent] = useState<CalendarEvent | null>(null);
@@ -102,12 +97,6 @@ export function Home() {
 
   const totalCount = todayEvents?.length ?? 0;
 
-  const handleSaveUrl = (url: string) => {
-    setCalendarUrl(url);
-    localStorage.setItem("carMeetsCalendarUrl", url);
-    setIsSettingsOpen(false);
-  };
-
   const handleSelectEvent = (id: string) => {
     setSelectedEventId(id);
   };
@@ -157,9 +146,6 @@ export function Home() {
                 onClick={() => setIsInfoOpen(true)}
               >
                 <Info className="h-5 w-5 text-muted-foreground" />
-              </Button>
-              <Button variant="ghost" size="icon" onClick={() => setIsSettingsOpen(true)}>
-                <Settings className="h-5 w-5 text-muted-foreground" />
               </Button>
               <Button
                 variant="ghost"
@@ -212,16 +198,9 @@ export function Home() {
             {todayError && (
               <div className="text-center p-6 border border-destructive/50 rounded-md bg-destructive/10">
                 <p className="text-destructive font-medium mb-2">Failed to load events</p>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Please check the calendar URL in settings.
+                <p className="text-sm text-muted-foreground">
+                  Unable to fetch the calendar. Please try again later.
                 </p>
-                <Button
-                  variant="outline"
-                  onClick={() => setIsSettingsOpen(true)}
-                  className="border-destructive text-destructive"
-                >
-                  Open Settings
-                </Button>
               </div>
             )}
 
@@ -302,13 +281,6 @@ export function Home() {
       {/* ── Modals ──────────────────────────────────────────────────────── */}
       <EventDetailModal event={detailEvent} onClose={() => setDetailEvent(null)} />
       <InfoModal isOpen={isInfoOpen} onClose={() => setIsInfoOpen(false)} />
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        currentUrl={calendarUrl}
-        onSave={handleSaveUrl}
-        defaultUrl={DEFAULT_CALENDAR_URL}
-      />
     </div>
   );
 }

@@ -5,7 +5,7 @@ import { format, parseISO } from "date-fns";
 import { useGeocodeLocation } from "@/hooks/use-geocode";
 
 const createCustomIcon = (isSelected: boolean) => {
-  const color = isSelected ? "#ff8c00" : "#f5f5f5";
+  const color = isSelected ? "#e83855" : "#f5f5f5";
   const size = isSelected ? 36 : 28;
   return L.divIcon({
     className: "custom-map-pin",
@@ -172,7 +172,7 @@ function EventMarker({
       <Popup>
         <div style={{ fontFamily: "sans-serif", fontSize: 13, minWidth: 200 }}>
           <strong style={{ display: "block", marginBottom: 4 }}>{event.title}</strong>
-          <span style={{ color: "#ff8c00", fontFamily: "monospace", fontSize: 11, display: "block", marginBottom: 6 }}>
+          <span style={{ color: "#e83855", fontFamily: "monospace", fontSize: 11, display: "block", marginBottom: 6 }}>
             {startTime}
           </span>
           <span style={{ color: "#888", fontSize: 11 }}>{event.location}</span>
