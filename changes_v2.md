@@ -1,61 +1,130 @@
-# changes_v2.md — What's changed since RUN_LOCALLY.md
+# changes_v2.md — Technical delta since RUN_LOCALLY.md
 
-Everything in `RUN_LOCALLY.md` still applies except for the items below.
-
----
-
-## 1. `DATABASE_URL` is no longer needed
-
-The API server no longer references `DATABASE_URL` anywhere. You can remove it from your `.env` or shell exports entirely. Only `SESSION_SECRET` is required.
+Developer/ops reference. Covers every API, dependency, and infrastructure change required to run the updated program.
 
 ---
 
-## 2. Changing the calendar URL (the Settings gear is gone)
+## Environment variables
 
-The gear icon and settings UI have been removed. The calendar URL is now a hardcoded constant in the frontend source:
+| Variable | Before | After |
+|----------|--------|-------|
+| `SESSION_SECRET` | Required | Required (unchanged) |
+| `DATABASE_URL` | Listed as optional | **Removed** — no longer referenced anywhere in the codebase; drop it |
+| `PORT` | Required by API server | Required (unchanged) |
 
-**File:** `artifacts/car-meets/src/pages/home.tsx`
+---
 
-```ts
-const DEFAULT_CALENDAR_URL =
-  "https://calendar.google.com/calendar/ical/...your-url.../basic.ics";
+## Dependencies
+
+**No new npm packages were added.** All new backend code uses Node.js built-in modules only:
+
+| Module | Source | Used in |
+|--------|--------|---------|
+| `node:fs` | Node built-in | `artifacts/api-server/src/routes/visitors.ts` |
+| `node:path` | Node built-in | `artifacts/api-server/src/routes/visitors.ts` |
+
+Run `pnpm install` is **not required** unless your `node_modules` is stale.
+
+---
+
+## New API route
+
+### `GET /api/visitors`
+
+Added to `artifacts/api-server/src/routes/visitors.ts`, registered in `artifacts/api-server/src/routes/index.ts`.
+
+**Behavior:**
+- Extracts caller IP from `X-Forwarded-For` header (first value), falling back to `req.socket.remoteAddress`
+- Adds the IP and a timestamp to an in-memory rolling log
+- Prunes entries older than 7 days on every call
+- Flushes the full log to disk after each write (see Filesystem section below)
+- Returns the count of unique IPs seen in the last 7 days
+
+**Response — `200 OK`:**
+```json
+{ "weeklyVisitors": 42 }
 ```
 
-To point the app at a different calendar, edit that string and restart the frontend (`pnpm --filter @workspace/car-meets run dev`).
+**No authentication.** Intentionally public — returns only the aggregate count, not the raw IP data.
+
+> **Note:** This route is not in `lib/api-spec/openapi.yaml` and has no generated React Query hook. The frontend calls it with a plain `fetch` inside a `useQuery`. If you regenerate the API client from the spec this route will not be affected.
 
 ---
 
-## 3. Editable "About" text
+## Removed API route
 
-A plain-text file controls what appears in the **ⓘ** info modal in the sidebar:
+### `GET /api/admin/visitors` — **deleted**
 
-**File:** `artifacts/car-meets/public/info.txt`
-
-Edit it freely — no rebuild needed, the frontend fetches it at runtime. Note: the current content still mentions a gear icon that no longer exists; update that paragraph if you use the file as-is.
+A temporary HTML admin table endpoint was created and then removed in the same session. It does not exist in the codebase. Any bookmark or reverse-proxy rule pointing to `/api/admin/visitors` will receive `404`.
 
 ---
 
-## 4. Visitor log file (auto-created, no setup needed)
+## Removed runtime configuration
 
-The API server now writes a rolling visitor log to disk on every page load:
+The calendar URL was previously settable at runtime via a Settings modal (stored in `localStorage`). That modal and all related state have been removed.
 
-**File:** `artifacts/api-server/data/visitor-log.json`
+**The URL is now a compile-time constant:**
 
-- Created automatically the first time the server receives a request — no action required.
-- Contains a JSON map of `IP → [timestamp_ms, ...]` for all visits in the last 7 days.
-- **Not accessible over HTTP** — read it directly via your file system or shell only.
-- Persists across server restarts.
+```
+artifacts/car-meets/src/pages/home.tsx
+  → const DEFAULT_CALENDAR_URL = "https://..."
+```
+
+To change the calendar source, edit that constant and rebuild the frontend. There is no runtime flag, environment variable, or API parameter for this.
 
 ---
 
-## New features (no setup required)
+## Filesystem — new write path
 
-These were added and work out of the box:
+The API server now writes a persistent visitor log to disk on every request to `GET /api/visitors`.
 
-| Feature | How to use |
-|---------|------------|
-| **Event detail modal** | Click any event card in the sidebar |
-| **Info modal** | Click the **ⓘ** icon in the sidebar header |
-| **Proximity sort** | Click **Sort Nearby** (bottom-right) to drop a draggable pin; sidebar re-sorts by distance |
-| **Weekly visitor count** | Shows automatically under the header — rolling 7-day unique-IP count |
-| **Map bounds / zoom limit** | Map is constrained to ~150-mile radius around Chicago; min zoom = 7 |
+| Property | Value |
+|----------|-------|
+| **Path** | `data/visitor-log.json` relative to `process.cwd()` of the API server process |
+| **Resolved path** | `artifacts/api-server/data/visitor-log.json` when started via `pnpm --filter @workspace/api-server run dev` |
+| **Created automatically** | Yes — `fs.mkdirSync(..., { recursive: true })` runs before every write |
+| **Format** | JSON object: `{ "<ip>": [<timestamp_ms>, ...], ... }` |
+| **Loaded on startup** | Yes — hydrated from disk into memory when the module loads |
+| **Failure behavior** | Non-fatal; write errors are silently caught; in-memory data remains accurate |
+
+**Permission requirement:** The OS user running the API server process must have write access to the `artifacts/api-server/data/` directory. On a standard local clone this is automatic. On a locked-down server, pre-create the directory and confirm ownership:
+
+```bash
+mkdir -p artifacts/api-server/data
+chown <your-run-user> artifacts/api-server/data
+```
+
+**The file is not served over HTTP.** It is only accessible via the local filesystem. To read it:
+
+```bash
+cat artifacts/api-server/data/visitor-log.json | python3 -m json.tool
+# or
+node -e "
+  const d = JSON.parse(require('fs').readFileSync('artifacts/api-server/data/visitor-log.json','utf8'));
+  const now = Date.now(), week = 7*24*60*60*1000;
+  const rows = Object.entries(d)
+    .map(([ip,ts]) => ({ ip, hits: ts.filter(t => t >= now-week).length, last: new Date(Math.max(...ts)).toISOString() }))
+    .sort((a,b) => b.hits - a.hits);
+  console.table(rows);
+"
+```
+
+---
+
+## OpenAPI spec
+
+`lib/api-spec/openapi.yaml` was **not modified**. The `/api/visitors` route is intentionally outside the spec and the generated client. The existing codegen workflow (`lib/api-client-react/`) is unaffected.
+
+---
+
+## Build / start commands
+
+Unchanged from `RUN_LOCALLY.md`. No new scripts, no new build steps.
+
+```bash
+# API server
+pnpm --filter @workspace/api-server run dev
+
+# Frontend
+pnpm --filter @workspace/car-meets run dev
+```
