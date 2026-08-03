@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { useGetCalendarEvents, getGeocodeAddressQueryKey, type CalendarEvent, type GeoLocation } from "@workspace/api-client-react";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { MapView } from "@/components/map-view";
 import { MeetCard } from "@/components/meet-card";
@@ -97,6 +97,17 @@ export function Home() {
 
   const totalCount = todayEvents?.length ?? 0;
 
+  // Weekly visitor count — records this visit and returns the week's unique total
+  const { data: visitorsData } = useQuery<{ weeklyVisitors: number }>({
+    queryKey: ["weeklyVisitors"],
+    queryFn: () =>
+      fetch("/api/visitors").then((r) => {
+        if (!r.ok) throw new Error("Failed to fetch visitor count");
+        return r.json();
+      }),
+    staleTime: 5 * 60 * 1000, // re-check at most every 5 min
+  });
+
   const handleSelectEvent = (id: string) => {
     setSelectedEventId(id);
   };
@@ -156,6 +167,13 @@ export function Home() {
               </Button>
             </div>
           </div>
+
+          {/* Weekly visitor subheader */}
+          {visitorsData && (
+            <p className="text-xs text-muted-foreground tracking-wide">
+              {visitorsData.weeklyVisitors.toLocaleString()} visitor{visitorsData.weeklyVisitors !== 1 ? "s" : ""} this week
+            </p>
+          )}
 
           {/* Date picker */}
           <Popover>
