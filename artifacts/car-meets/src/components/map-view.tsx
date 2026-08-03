@@ -74,6 +74,17 @@ interface MapViewProps {
   onProximityPinMove: (lat: number, lng: number) => void;
 }
 
+// Chicago State & Madison origin point
+const CHICAGO_ORIGIN: [number, number] = [41.8819, -87.6278];
+
+// 150-mile bounding box around the origin
+// ~150mi / 69 mi per degree lat ≈ 2.17°
+// ~150mi / (69 * cos(41.88°)) ≈ 2.92° lng
+const MAX_BOUNDS: [[number, number], [number, number]] = [
+  [41.8819 - 2.17, -87.6278 - 2.92], // SW corner
+  [41.8819 + 2.17, -87.6278 + 2.92], // NE corner
+];
+
 export function MapView({
   events,
   selectedEventId,
@@ -81,14 +92,16 @@ export function MapView({
   proximityPin,
   onProximityPinMove,
 }: MapViewProps) {
-  const defaultCenter: [number, number] = [41.85, -88.0];
   const defaultZoom = 9;
 
   return (
     <div className="w-full h-full relative z-0">
       <MapContainer
-        center={defaultCenter}
+        center={CHICAGO_ORIGIN}
         zoom={defaultZoom}
+        minZoom={7}
+        maxBounds={MAX_BOUNDS}
+        maxBoundsViscosity={1.0}
         style={{ width: "100%", height: "100%", background: "#0a0a0a" }}
         zoomControl={true}
       >

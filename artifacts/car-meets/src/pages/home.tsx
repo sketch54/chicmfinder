@@ -23,9 +23,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 const DEFAULT_CALENDAR_URL =
   "https://calendar.google.com/calendar/ical/e7abbfecee4eefbd2ebb1440e132c42e438dc77848e702faa8be9be461691b47%40group.calendar.google.com/public/basic.ics";
 
-// Chicago area default center for proximity pin
-const DEFAULT_PIN_LAT = 41.85;
-const DEFAULT_PIN_LNG = -88.0;
+// Chicago 0,0 address origin — intersection of State St & Madison St
+const DEFAULT_PIN_LAT = 41.8819;
+const DEFAULT_PIN_LNG = -87.6278;
 
 function haversineDistance(
   lat1: number, lng1: number,
