@@ -1,5 +1,6 @@
 import { CalendarEvent } from "@workspace/api-client-react";
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from "react-leaflet";
+import { useEffect } from "react";
+import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { format, parseISO } from "date-fns";
 import { useGeocodeLocation } from "@/hooks/use-geocode";
@@ -85,6 +86,23 @@ const MAX_BOUNDS: [[number, number], [number, number]] = [
   [41.8819 + 2.17, -87.6278 + 2.92], // NE corner
 ];
 
+// Forces Leaflet to recalculate tile coverage after the container finishes rendering.
+// Without this, mobile browsers often only load tiles for the top ~50% of the map.
+function MapResizer() {
+  const map = useMap();
+  useEffect(() => {
+    // Small delay lets the browser finish painting before we measure
+    const timer = setTimeout(() => map.invalidateSize(), 100);
+    const onResize = () => map.invalidateSize();
+    window.addEventListener("resize", onResize);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [map]);
+  return null;
+}
+
 export function MapView({
   events,
   selectedEventId,
@@ -117,6 +135,7 @@ export function MapView({
             onClick={() => onSelectEvent(event.id)}
           />
         ))}
+        <MapResizer />
         {proximityPin && (
           <ProximityMarker
             lat={proximityPin.lat}

@@ -113,7 +113,7 @@ export function Home() {
   };
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-background text-foreground dark">
+    <div className="flex w-full overflow-hidden bg-background text-foreground dark" style={{ height: "100dvh" }}>
       {/* Backdrop — all screen sizes */}
       {sidebarOpen && (
         <div
