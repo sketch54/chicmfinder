@@ -1,44 +1,66 @@
-import { useState, useEffect } from "react";
-import { useGetCalendarEvents, type CalendarEvent } from "@workspace/api-client-react";
+import { useState, useEffect, useMemo } from "react";
+import { useGetCalendarEvents, getGeocodeAddressQueryKey, type CalendarEvent, type GeoLocation } from "@workspace/api-client-react";
 import { useQueries } from "@tanstack/react-query";
-import { format, addDays } from "date-fns";
+import { format } from "date-fns";
 import { MapView } from "@/components/map-view";
 import { MeetCard } from "@/components/meet-card";
-import { WeekSidebar, type DayGroup } from "@/components/week-sidebar";
+import { EventDetailModal } from "@/components/event-detail-modal";
+import { InfoModal } from "@/components/info-modal";
 import { SettingsModal } from "@/components/settings-modal";
 import { Button } from "@/components/ui/button";
-import { Calendar as CalendarIcon, Settings, MapPin, List, X } from "lucide-react";
+import {
+  Calendar as CalendarIcon,
+  Settings,
+  MapPin,
+  List,
+  X,
+  Info,
+  LocateFixed,
+  LocateOff,
+} from "lucide-react";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
 
 const DEFAULT_CALENDAR_URL =
   "https://calendar.google.com/calendar/ical/e7abbfecee4eefbd2ebb1440e132c42e438dc77848e702faa8be9be461691b47%40group.calendar.google.com/public/basic.ics";
 
-// Fetch events for a specific date via the raw API (used by useQueries for week view)
-async function fetchEventsForDate(url: string, dateStr: string): Promise<CalendarEvent[]> {
-  const params = new URLSearchParams({ url, date: dateStr });
-  const res = await fetch(`/api/calendar/events?${params.toString()}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json() as Promise<CalendarEvent[]>;
+// Chicago area default center for proximity pin
+const DEFAULT_PIN_LAT = 41.85;
+const DEFAULT_PIN_LNG = -88.0;
+
+function haversineDistance(
+  lat1: number, lng1: number,
+  lat2: number, lng2: number,
+): number {
+  const R = 3959; // miles
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-type Tab = "today" | "week";
-
 export function Home() {
-  const [tab, setTab] = useState<Tab>("today");
   const [date, setDate] = useState<Date>(new Date());
   const [calendarUrl, setCalendarUrl] = useState<string>(
     () => localStorage.getItem("carMeetsCalendarUrl") || DEFAULT_CALENDAR_URL,
   );
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [detailEvent, setDetailEvent] = useState<CalendarEvent | null>(null);
+  // Start open on desktop, closed on mobile
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => typeof window !== "undefined" && window.innerWidth >= 768,
+  );
+  const [proximityPin, setProximityPin] = useState<{ lat: number; lng: number } | null>(null);
 
   const dateString = format(date, "yyyy-MM-dd");
 
-  // ── Today query ──────────────────────────────────────────────────────────
   const {
     data: todayEvents,
     isLoading: todayLoading,
@@ -48,44 +70,37 @@ export function Home() {
     { query: { enabled: !!calendarUrl } },
   );
 
-  // ── Week queries (7 parallel, starting from today) ───────────────────────
-  const weekDays = Array.from({ length: 7 }, (_, i) => addDays(new Date(), i));
-
-  const weekResults = useQueries({
-    queries: weekDays.map((day) => {
-      const ds = format(day, "yyyy-MM-dd");
-      return {
-        queryKey: ["calendar-events", calendarUrl, ds],
-        queryFn: () => fetchEventsForDate(calendarUrl, ds),
-        enabled: !!calendarUrl && tab === "week",
-        staleTime: 60 * 60 * 1000, // 1h client-side; server cache handles 3am refresh
-      };
-    }),
+  // Geocode all events for proximity sorting (shares cache with MeetCard)
+  const geoQueries = useQueries({
+    queries: (todayEvents ?? []).map((event) => ({
+      queryKey: getGeocodeAddressQueryKey({ address: event.location ?? "" }),
+      queryFn: () =>
+        fetch(`/api/geocode?address=${encodeURIComponent(event.location ?? "")}`)
+          .then((r) => {
+            if (!r.ok) throw new Error("Geocode failed");
+            return r.json() as Promise<GeoLocation>;
+          }),
+      enabled: !!event.location,
+      staleTime: Infinity,
+    })),
   });
 
-  const dayGroups: DayGroup[] = weekDays.map((day, i) => ({
-    date: day,
-    dateStr: format(day, "yyyy-MM-dd"),
-    events: (weekResults[i].data as CalendarEvent[]) ?? [],
-    isLoading: weekResults[i].isLoading,
-    isError: weekResults[i].isError,
-  }));
+  // Sort events by proximity when pin is active
+  const displayEvents = useMemo(() => {
+    const events = todayEvents ?? [];
+    if (!proximityPin) return events;
 
-  const allWeekEvents = dayGroups.flatMap((g) => g.events);
+    const withDist = events.map((event, i) => {
+      const geo = geoQueries[i]?.data as GeoLocation | undefined;
+      const dist = geo
+        ? haversineDistance(proximityPin.lat, proximityPin.lng, geo.lat, geo.lng)
+        : Infinity;
+      return { event, dist };
+    });
+    return withDist.sort((a, b) => a.dist - b.dist).map((x) => x.event);
+  }, [todayEvents, geoQueries, proximityPin]);
 
-  // ── Active events for the map ─────────────────────────────────────────────
-  const mapEvents: CalendarEvent[] = tab === "week" ? allWeekEvents : (todayEvents ?? []);
-
-  // ── Total meet count for the floating button label ────────────────────────
-  const totalCount = tab === "week" ? allWeekEvents.length : (todayEvents?.length ?? 0);
-
-  useEffect(() => {
-    const onResize = () => {
-      if (window.innerWidth >= 768) setSidebarOpen(false);
-    };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
+  const totalCount = todayEvents?.length ?? 0;
 
   const handleSaveUrl = (url: string) => {
     setCalendarUrl(url);
@@ -95,15 +110,25 @@ export function Home() {
 
   const handleSelectEvent = (id: string) => {
     setSelectedEventId(id);
-    setSidebarOpen(false);
+  };
+
+  const handleCardClick = (event: CalendarEvent) => {
+    setSelectedEventId(event.id);
+    setDetailEvent(event);
+  };
+
+  const toggleProximityPin = () => {
+    setProximityPin((prev) =>
+      prev ? null : { lat: DEFAULT_PIN_LAT, lng: DEFAULT_PIN_LNG },
+    );
   };
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground dark">
-      {/* Mobile backdrop */}
+      {/* Backdrop — all screen sizes */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-20 bg-black/60 md:hidden"
+          className="fixed inset-0 z-20 bg-black/60"
           onClick={() => setSidebarOpen(false)}
         />
       )}
@@ -113,8 +138,8 @@ export function Home() {
         className={[
           "flex flex-col bg-card border-r border-border",
           "fixed inset-y-0 left-0 z-30 w-[85vw] max-w-sm transition-transform duration-300 ease-in-out",
+          "md:w-96",
           sidebarOpen ? "translate-x-0" : "-translate-x-full",
-          "md:relative md:translate-x-0 md:w-96 md:flex-shrink-0 md:z-10 md:transition-none",
         ].join(" ")}
       >
         {/* Header */}
@@ -122,16 +147,23 @@ export function Home() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-primary">
               <MapPin className="h-6 w-6" />
-              <h1 className="text-xl font-bold tracking-tight uppercase">Car Meets</h1>
+              <h1 className="text-xl font-bold tracking-tight uppercase">chicarmeet.us</h1>
             </div>
             <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                title="About"
+                onClick={() => setIsInfoOpen(true)}
+              >
+                <Info className="h-5 w-5 text-muted-foreground" />
+              </Button>
               <Button variant="ghost" size="icon" onClick={() => setIsSettingsOpen(true)}>
                 <Settings className="h-5 w-5 text-muted-foreground" />
               </Button>
               <Button
                 variant="ghost"
                 size="icon"
-                className="md:hidden"
                 onClick={() => setSidebarOpen(false)}
               >
                 <X className="h-5 w-5 text-muted-foreground" />
@@ -139,153 +171,137 @@ export function Home() {
             </div>
           </div>
 
-          {/* Tabs */}
-          <div className="flex rounded-lg border border-border bg-background p-1 gap-1">
-            <button
-              onClick={() => setTab("today")}
-              className={cn(
-                "flex-1 rounded-md py-1.5 text-sm font-medium transition-colors",
-                tab === "today"
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              Today
-            </button>
-            <button
-              onClick={() => setTab("week")}
-              className={cn(
-                "flex-1 rounded-md py-1.5 text-sm font-medium transition-colors",
-                tab === "week"
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              This Week
-            </button>
-          </div>
-
-          {/* Date picker — only on Today tab */}
-          {tab === "today" && (
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  className="w-full justify-start text-left font-normal bg-card border-border hover:bg-secondary"
-                >
-                  <CalendarIcon className="mr-2 h-4 w-4 text-primary" />
-                  {format(date, "PPP")}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-0 border-border bg-popover" align="start">
-                <Calendar
-                  mode="single"
-                  selected={date}
-                  onSelect={(d) => d && setDate(d)}
-                  initialFocus
-                  className="bg-popover text-popover-foreground"
-                />
-              </PopoverContent>
-            </Popover>
-          )}
-
-          {/* Week range label */}
-          {tab === "week" && (
-            <p className="text-xs text-muted-foreground text-center">
-              {format(weekDays[0], "MMM d")} – {format(weekDays[6], "MMM d, yyyy")}
-            </p>
-          )}
+          {/* Date picker */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                className="w-full justify-start text-left font-normal bg-card border-border hover:bg-secondary"
+              >
+                <CalendarIcon className="mr-2 h-4 w-4 text-primary" />
+                {format(date, "PPP")}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0 border-border bg-popover" align="start">
+              <Calendar
+                mode="single"
+                selected={date}
+                onSelect={(d) => d && setDate(d)}
+                initialFocus
+                className="bg-popover text-popover-foreground"
+              />
+            </PopoverContent>
+          </Popover>
         </div>
 
         {/* Event list */}
         <div className="flex-1 overflow-y-auto p-4">
-          {/* ── Today tab ── */}
-          {tab === "today" && (
-            <div className="space-y-4">
-              {todayLoading && (
-                <div className="space-y-4">
-                  {[1, 2, 3].map((i) => (
-                    <div key={i} className="p-4 rounded-md border border-border bg-card">
-                      <Skeleton className="h-5 w-2/3 mb-2 bg-muted" />
-                      <Skeleton className="h-4 w-1/3 mb-4 bg-muted" />
-                      <Skeleton className="h-4 w-full bg-muted" />
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {todayError && (
-                <div className="text-center p-6 border border-destructive/50 rounded-md bg-destructive/10">
-                  <p className="text-destructive font-medium mb-2">Failed to load events</p>
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Please check the calendar URL in settings.
-                  </p>
-                  <Button
-                    variant="outline"
-                    onClick={() => setIsSettingsOpen(true)}
-                    className="border-destructive text-destructive"
-                  >
-                    Open Settings
-                  </Button>
-                </div>
-              )}
-
-              {!todayLoading && !todayError && todayEvents?.length === 0 && (
-                <div className="text-center p-8 text-muted-foreground">
-                  <div className="bg-secondary w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
-                    <CalendarIcon className="h-6 w-6 opacity-50" />
+          <div className="space-y-4">
+            {todayLoading && (
+              <div className="space-y-4">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="p-4 rounded-md border border-border bg-card">
+                    <Skeleton className="h-5 w-2/3 mb-2 bg-muted" />
+                    <Skeleton className="h-4 w-1/3 mb-4 bg-muted" />
+                    <Skeleton className="h-4 w-full bg-muted" />
                   </div>
-                  <p>No meets scheduled for this day.</p>
-                </div>
-              )}
-
-              {!todayLoading &&
-                !todayError &&
-                todayEvents?.map((event) => (
-                  <MeetCard
-                    key={event.id}
-                    event={event}
-                    isSelected={selectedEventId === event.id}
-                    onClick={() => handleSelectEvent(event.id)}
-                  />
                 ))}
-            </div>
-          )}
+              </div>
+            )}
 
-          {/* ── This Week tab ── */}
-          {tab === "week" && (
-            <WeekSidebar
-              dayGroups={dayGroups}
-              selectedEventId={selectedEventId}
-              onSelectEvent={handleSelectEvent}
-            />
-          )}
+            {todayError && (
+              <div className="text-center p-6 border border-destructive/50 rounded-md bg-destructive/10">
+                <p className="text-destructive font-medium mb-2">Failed to load events</p>
+                <p className="text-sm text-muted-foreground mb-4">
+                  Please check the calendar URL in settings.
+                </p>
+                <Button
+                  variant="outline"
+                  onClick={() => setIsSettingsOpen(true)}
+                  className="border-destructive text-destructive"
+                >
+                  Open Settings
+                </Button>
+              </div>
+            )}
+
+            {!todayLoading && !todayError && displayEvents.length === 0 && (
+              <div className="text-center p-8 text-muted-foreground">
+                <div className="bg-secondary w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <CalendarIcon className="h-6 w-6 opacity-50" />
+                </div>
+                <p>No meets scheduled for this day.</p>
+              </div>
+            )}
+
+            {!todayLoading &&
+              !todayError &&
+              displayEvents.map((event) => (
+                <MeetCard
+                  key={event.id}
+                  event={event}
+                  isSelected={selectedEventId === event.id}
+                  onClick={() => handleCardClick(event)}
+                />
+              ))}
+          </div>
         </div>
       </aside>
 
       {/* ── Map ─────────────────────────────────────────────────────────── */}
-      <div className="relative flex-1 h-full">
+      <div className="relative flex-1 h-full w-full">
         <MapView
-          events={mapEvents}
+          events={todayEvents ?? []}
           selectedEventId={selectedEventId}
-          onSelectEvent={setSelectedEventId}
+          onSelectEvent={handleSelectEvent}
+          proximityPin={proximityPin}
+          onProximityPinMove={(lat, lng) => setProximityPin({ lat, lng })}
         />
 
-        {/* Floating toggle — mobile only */}
+        {/* Toggle sidebar button — all screen sizes */}
         <button
-          onClick={() => setSidebarOpen(true)}
+          onClick={() => setSidebarOpen((prev) => !prev)}
           className={[
-            "md:hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-20",
+            "fixed bottom-6 left-1/2 -translate-x-1/2 z-20",
             "flex items-center gap-2 px-5 py-3 rounded-full",
             "bg-primary text-primary-foreground font-semibold text-sm shadow-lg",
             "active:scale-95 transition-transform",
           ].join(" ")}
         >
           <List className="h-4 w-4" />
-          {totalCount > 0 ? `${totalCount} meets` : "View meets"}
+          {totalCount > 0 ? `${totalCount} meets today` : "View meets"}
+        </button>
+
+        {/* Proximity sort pin button — bottom right */}
+        <button
+          onClick={toggleProximityPin}
+          title={proximityPin ? "Remove proximity sort" : "Sort by proximity"}
+          className={[
+            "fixed bottom-6 right-6 z-20",
+            "flex items-center gap-2 px-4 py-3 rounded-full",
+            "font-semibold text-sm shadow-lg active:scale-95 transition-all",
+            proximityPin
+              ? "bg-cyan-400 text-black ring-2 ring-cyan-300"
+              : "bg-card text-foreground border border-border",
+          ].join(" ")}
+        >
+          {proximityPin ? (
+            <>
+              <LocateOff className="h-4 w-4" />
+              <span className="hidden sm:inline">Clear Sort</span>
+            </>
+          ) : (
+            <>
+              <LocateFixed className="h-4 w-4" />
+              <span className="hidden sm:inline">Sort Nearby</span>
+            </>
+          )}
         </button>
       </div>
 
+      {/* ── Modals ──────────────────────────────────────────────────────── */}
+      <EventDetailModal event={detailEvent} onClose={() => setDetailEvent(null)} />
+      <InfoModal isOpen={isInfoOpen} onClose={() => setIsInfoOpen(false)} />
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}

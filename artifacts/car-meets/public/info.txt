@@ -1,0 +1,18 @@
+CHICARMEET.US
+
+A community calendar for car meets across the Chicagoland area.
+
+Events are sourced from a public Google Calendar that is maintained by community members. If you know of a meet that's not listed, reach out to get it added.
+
+HOW TO USE
+- Browse today's meets in the sidebar, or pick any date with the calendar picker.
+- Click any event to see its full details.
+- Tap a pin on the map to highlight the corresponding event.
+- Use the proximity sort button (bottom-right) to drop a pin anywhere on the map and instantly re-sort the list by distance to that point.
+- Click the gear icon to swap in a different iCal calendar URL.
+
+SUBMITTING A MEET
+Contact us via social media or email to have your event added to the calendar. All meets welcome — cars, trucks, bikes, exotics, whatever.
+
+DISCLAIMER
+Event details are sourced from public calendar data and may change. Always verify time and location with the event organizer before heading out.

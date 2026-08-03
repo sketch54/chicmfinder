@@ -1,5 +1,5 @@
 import { CalendarEvent } from "@workspace/api-client-react";
-import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import { format, parseISO } from "date-fns";
 import { useGeocodeLocation } from "@/hooks/use-geocode";
@@ -24,13 +24,63 @@ const createCustomIcon = (isSelected: boolean) => {
   });
 };
 
+const createProximityIcon = () => {
+  const size = 40;
+  return L.divIcon({
+    className: "proximity-pin",
+    html: `<div style="
+      width: ${size}px;
+      height: ${size}px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    ">
+      <div style="
+        width: 22px;
+        height: 22px;
+        border-radius: 50% 50% 50% 0;
+        transform: rotate(-45deg);
+        background: #22d3ee;
+        border: 3px solid #000;
+        box-shadow: 0 0 16px rgba(34,211,238,0.7);
+      "><div style="width: 6px; height: 6px; background: #000; border-radius: 50%; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);"></div></div>
+      <div style="
+        position: absolute;
+        bottom: -4px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #22d3ee;
+        color: #000;
+        font-size: 9px;
+        font-weight: 800;
+        padding: 1px 4px;
+        border-radius: 3px;
+        white-space: nowrap;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+        font-family: monospace;
+      ">SORT</div>
+    </div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size],
+  });
+};
+
 interface MapViewProps {
   events: CalendarEvent[];
   selectedEventId: string | null;
   onSelectEvent: (id: string) => void;
+  proximityPin: { lat: number; lng: number } | null;
+  onProximityPinMove: (lat: number, lng: number) => void;
 }
 
-export function MapView({ events, selectedEventId, onSelectEvent }: MapViewProps) {
+export function MapView({
+  events,
+  selectedEventId,
+  onSelectEvent,
+  proximityPin,
+  onProximityPinMove,
+}: MapViewProps) {
   const defaultCenter: [number, number] = [41.85, -88.0];
   const defaultZoom = 9;
 
@@ -54,8 +104,47 @@ export function MapView({ events, selectedEventId, onSelectEvent }: MapViewProps
             onClick={() => onSelectEvent(event.id)}
           />
         ))}
+        {proximityPin && (
+          <ProximityMarker
+            lat={proximityPin.lat}
+            lng={proximityPin.lng}
+            onMove={onProximityPinMove}
+          />
+        )}
       </MapContainer>
     </div>
+  );
+}
+
+function ProximityMarker({
+  lat,
+  lng,
+  onMove,
+}: {
+  lat: number;
+  lng: number;
+  onMove: (lat: number, lng: number) => void;
+}) {
+  return (
+    <Marker
+      position={[lat, lng]}
+      icon={createProximityIcon()}
+      draggable={true}
+      eventHandlers={{
+        dragend: (e) => {
+          const { lat: newLat, lng: newLng } = (e.target as L.Marker).getLatLng();
+          onMove(newLat, newLng);
+        },
+      }}
+    >
+      <Popup>
+        <div style={{ fontFamily: "sans-serif", fontSize: 12 }}>
+          <strong>Proximity sort pin</strong>
+          <br />
+          <span style={{ color: "#888", fontSize: 11 }}>Drag to re-sort by distance</span>
+        </div>
+      </Popup>
+    </Marker>
   );
 }
 
