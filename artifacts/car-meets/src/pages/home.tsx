@@ -261,7 +261,7 @@ export function Home() {
           className={[
             "fixed bottom-6 left-1/2 -translate-x-1/2 z-20",
             "flex items-center gap-2 px-5 py-3 rounded-full",
-            "bg-primary text-primary-foreground font-semibold text-sm shadow-lg",
+            "bg-primary text-black font-semibold text-sm shadow-lg",
             "active:scale-95 transition-transform",
           ].join(" ")}
         >
