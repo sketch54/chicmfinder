@@ -2,6 +2,24 @@
 
 ---
 
+## 3. Tab title, favicon, and embed description
+
+**File:** `artifacts/car-meets/index.html`, `artifacts/car-meets/public/favicon.png`
+
+| Field | Before | After |
+|-------|--------|-------|
+| Browser tab title | `Car Meets Map` | `Chicago Car Meets` |
+| Favicon | `favicon.svg` (SVG placeholder) | `favicon.png` (custom car icon) |
+| `<meta name="description">` | Replit placeholder copy | `Find car meets near you in the Chicago area.` |
+| `og:title` | `Car Meets Map` | `Chicago Car Meets` |
+| `og:description` | Replit placeholder copy | `Find car meets near you in the Chicago area.` |
+| `twitter:title` | `Car Meets Map` | `Chicago Car Meets` |
+| `twitter:description` | Replit placeholder copy | `Find car meets near you in the Chicago area.` |
+
+The icon file was copied from `attached_assets/chicfm_icon_1785874664283.png` to `artifacts/car-meets/public/favicon.png`. The `<link rel="icon">` tag was updated from `type="image/svg+xml"` to `type="image/png"` to match.
+
+---
+
 ## 1. Sidebar closed by default on all screen sizes
 
 **File:** `artifacts/car-meets/src/pages/home.tsx`
