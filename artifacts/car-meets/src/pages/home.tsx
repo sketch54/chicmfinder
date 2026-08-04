@@ -49,9 +49,7 @@ export function Home() {
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [detailEvent, setDetailEvent] = useState<CalendarEvent | null>(null);
   // Start open on desktop, closed on mobile
-  const [sidebarOpen, setSidebarOpen] = useState(
-    () => typeof window !== "undefined" && window.innerWidth >= 768,
-  );
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [proximityPin, setProximityPin] = useState<{ lat: number; lng: number } | null>(null);
 
   const dateString = format(date, "yyyy-MM-dd");
@@ -96,6 +94,14 @@ export function Home() {
   }, [todayEvents, geoQueries, proximityPin]);
 
   const totalCount = todayEvents?.length ?? 0;
+
+  // Resolved lat/lng positions for all geocoded events — used to auto-fit the map
+  const geoPositions = useMemo<[number, number][]>(() => {
+    return geoQueries
+      .map((q) => q.data as GeoLocation | undefined)
+      .filter((g): g is GeoLocation => !!g)
+      .map((g): [number, number] => [g.lat, g.lng]);
+  }, [geoQueries]);
 
   // Weekly visitor count — records this visit and returns the week's unique total
   const { data: visitorsData } = useQuery<{ weeklyVisitors: number }>({
@@ -253,6 +259,7 @@ export function Home() {
           onSelectEvent={handleSelectEvent}
           proximityPin={proximityPin}
           onProximityPinMove={(lat, lng) => setProximityPin({ lat, lng })}
+          geoPositions={geoPositions}
         />
 
         {/* Toggle sidebar button — all screen sizes */}

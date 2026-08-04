@@ -1,5 +1,5 @@
 import { CalendarEvent } from "@workspace/api-client-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { format, parseISO } from "date-fns";
@@ -73,6 +73,22 @@ interface MapViewProps {
   onSelectEvent: (id: string) => void;
   proximityPin: { lat: number; lng: number } | null;
   onProximityPinMove: (lat: number, lng: number) => void;
+  geoPositions: [number, number][];
+}
+
+// Fits the map to the bounds of all markers exactly once on first load.
+function FitBoundsOnLoad({ positions }: { positions: [number, number][] }) {
+  const map = useMap();
+  const hasFit = useRef(false);
+
+  useEffect(() => {
+    if (hasFit.current || positions.length === 0) return;
+    hasFit.current = true;
+    const bounds = L.latLngBounds(positions);
+    map.fitBounds(bounds, { padding: [60, 60], maxZoom: 12 });
+  }, [map, positions]);
+
+  return null;
 }
 
 // Chicago State & Madison origin point
@@ -109,6 +125,7 @@ export function MapView({
   onSelectEvent,
   proximityPin,
   onProximityPinMove,
+  geoPositions,
 }: MapViewProps) {
   const defaultZoom = 9;
 
@@ -135,6 +152,7 @@ export function MapView({
             onClick={() => onSelectEvent(event.id)}
           />
         ))}
+        <FitBoundsOnLoad positions={geoPositions} />
         <MapResizer />
         {proximityPin && (
           <ProximityMarker
